@@ -1,0 +1,7 @@
+vpn_interface_name: ppp1
+prefix: /opt
+shell: /opt/bin/sh
+
+ipset_name: rublock
+lists_dir: "{{ prefix }}/tmp/lst"
+custom_unblock_hosts: "{{ prefix }}/etc/unblock.txt"

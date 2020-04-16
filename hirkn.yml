@@ -1,0 +1,264 @@
+---
+
+- hosts: keenetic
+  gather_facts: False
+
+  remote_user: root
+
+# Packages installation
+
+  tasks:
+  - name: Install required software
+    raw: opkg install ipset curl iptables cron bind-dig
+
+  - name: Create /bin/rkn-update.sh script
+    raw: |
+          tee {{ prefix }}/bin/rkn-update.sh > /dev/null <<EOF
+          #!{{ shell }}
+          echo "|==> Unblock: Checking for network availability before updating IP sets"
+
+          until ADDRS=\$(dig +short google.com @localhost) && [ -n "\$ADDRS" ] > /dev/null 2>&1; do sleep 5; done
+
+          IPSET="{{ ipset_name }}"
+          LISTS_DIR="{{ lists_dir }}"
+
+          {{ prefix }}/bin/rkn-update-lists.sh
+
+          echo "|==> Unblock: Clearing ipset '\$IPSET'"
+          ipset flush \$IPSET
+
+          echo "|==> Unblock: Importing lists into ipset '\$IPSET'"
+          {{ prefix }}/bin/rkn-apply-list.sh "\$LISTS_DIR/subnet.rkn.lst"
+          {{ prefix }}/bin/rkn-apply-list.sh "\$LISTS_DIR/ipsum.rkn.lst"
+
+          echo "|==> Unblock: Importing custom lists into ipset '\$IPSET'"
+          {{ prefix }}/bin/rkn-apply-custom-list.sh
+          EOF
+
+  - name: Create /bin/rkn-update-lists.sh script
+    raw: |
+          tee {{ prefix }}/bin/rkn-update-lists.sh > /dev/null <<EOF
+          #!{{ shell }}
+
+          LISTS_DIR="{{ lists_dir }}"
+
+          mkdir -p \$LISTS_DIR
+
+          echo "|==> Unblock: Downloading block lists"
+          curl -z \$LISTS_DIR/subnet.rkn.lst https://antifilter.download/list/subnet.lst --output \$LISTS_DIR/subnet.rkn.lst
+          curl -z \$LISTS_DIR/ipsum.rkn.lst https://antifilter.download/list/ipsum.lst --output \$LISTS_DIR/ipsum.rkn.lst
+          EOF
+
+  - name: Create /bin/rkn-apply-list.sh script
+    raw: |
+          tee {{ prefix }}/bin/rkn-apply-list.sh > /dev/null <<EOF
+          #!{{ shell }}
+
+          IPSET="{{ ipset_name }}"
+
+          cat "\$1" | sed "s/^/add \$IPSET /" | ipset restore -!
+          EOF
+
+  - name: Create /bin/rkn-apply-custom-list.sh script
+    raw: |
+          tee {{ prefix }}/bin/rkn-apply-custom-list.sh > /dev/null <<EOF
+          #!{{ shell }}
+
+          while read line || [ -n "\$line" ]; do
+
+            [ -z "\$line" ] && continue
+            [ "\${line:0:1}" = "#" ] && continue
+
+            cidr=\$(echo \$line | grep -Eo '[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}/[0-9]{1,2}')
+
+            if [ ! -z "\$cidr" ]; then
+              ipset -exist add {{ ipset_name }} \$cidr
+              continue
+            fi
+
+            range=\$(echo \$line | grep -Eo '[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}-[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}')
+
+            if [ ! -z "\$range" ]; then
+              ipset -exist add {{ ipset_name }} \$range
+              continue
+            fi
+
+            addr=\$(echo \$line | grep -Eo '[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}')
+
+            if [ ! -z "\$addr" ]; then
+              ipset -exist add {{ ipset_name }} \$addr
+              continue
+            fi
+
+            dig +short \$line @localhost | grep -Eo '[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' | awk '{system("ipset -exist add {{ ipset_name }} "\$1)}'
+
+          done < "{{ custom_unblock_hosts }}"
+          EOF
+
+  - name: Create /etc/ndm/fs.d/100-rkn-ipset.sh
+    raw: |
+          tee {{ prefix }}/etc/ndm/fs.d/100-rkn-ipset.sh > /dev/null <<EOF
+          #!{{ shell }}
+
+          [ "\$1" != "start" ] && exit 0
+
+          echo "|==> Unblock: Create ip set '{{ ipset_name }}'"
+          ipset create "{{ ipset_name }}" hash:net -exist
+
+          # Dirty hack
+          echo "|==> Unblock: Sleeping 10 secs to allow filesystem to fully mount"
+          sleep 10
+
+          # update list
+          {{ prefix }}/bin/rkn-update.sh &
+
+          exit 0
+          EOF
+
+  - name: Create /etc/ndm/netfilter.d/100-rkn-fwmarks.sh
+    raw: |
+          tee {{ prefix }}/etc/ndm/netfilter.d/100-rkn-fwmarks.sh > /dev/null <<EOF
+          #!{{ shell }}
+
+          [ "\$type" == "ip6tables" ] && exit 0
+          [ "\$table" != "mangle" ] && exit 0
+
+          IPSET="{{ ipset_name }}"
+
+          [ -z "\$(iptables-save | grep \$IPSET)" ] && \
+          iptables -w -A PREROUTING -t mangle -m set --match-set "\$IPSET" dst,src -j MARK --set-mark 1
+
+          exit 0
+          EOF
+
+  - name: Create /etc/ndm/ifstatechanged.d/100-rkn-route.sh script
+    raw: |
+          tee {{ prefix }}/etc/ndm/ifstatechanged.d/100-rkn-route.sh > /dev/null <<EOF
+          #!{{ shell }}
+
+          VPN_INTERFACE="{{ vpn_interface_name }}"
+
+          [ "\$1" == "hook" ] || exit 0
+          [ "\$system_name" == "\$VPN_INTERFACE" ] || exit 0
+
+          echo "|==> Unblock: \$id change: \$change  to - up:\$up link:\$link connected:\$connected"
+
+          case \${change}-\${connected}-\${link}-\${up} in
+              link-yes-up-up)
+                  ### Create routing tables for marked packets
+                  if [ -z "\$(ip rule show | grep 1000:)" ]; then
+                      echo "|==> Unblock: add rule to \$VPN_INTERFACE"
+                      ip rule add fwmark 1 table 1 priority 1000
+                  fi
+
+                  if [ -z "\$(ip route list table 1)" ]; then
+                      echo "|==> Unblock: add route to \$VPN_INTERFACE"
+                      ip route add default dev \$VPN_INTERFACE table 1
+                  fi
+
+                  ### Disable HW NAT
+                  sysctl -w net.ipv4.netfilter.ip_conntrack_fastnat=0 || true # NDMS2
+                  sysctl -w net.netfilter.nf_conntrack_fastnat=0 || true # NDMS3
+              ;;
+              link-no-down-down)
+                  ### Delete routing tables for marked packets
+                  if [ -n "\$(ip rule show | grep 1000:)" ]; then
+                      echo "|==> Unblock: del rule to \$VPN_INTERFACE"
+                      ip rule del table 1
+                  fi
+
+                  if [ -n "\$(ip route list table 1)" ]; then
+                      echo "|==> Unblock: del route to \$VPN_INTERFACE"
+                      ip route flush table 1
+                  fi
+
+                  ### Enable HW NAT
+                  sysctl -w net.ipv4.netfilter.ip_conntrack_fastnat=1 || true # NDMS2
+                  sysctl -w net.netfilter.nf_conntrack_fastnat=1 || true # NDMS3
+              ;;
+          esac
+          EOF
+
+  - name: Create /etc/cron.daily/100-rkn-update.sh
+    raw: |
+          tee {{ prefix }}/etc/cron.daily/100-rkn-update.sh > /dev/null <<EOF
+          #!{{ shell }}
+
+          {{ prefix }}/bin/rkn-update.sh
+
+          exit 0
+          EOF
+
+  - name: Create /etc/unblock.txt
+    raw: |
+          tee {{ prefix }}/etc/unblock.txt > /dev/null <<EOF
+          ###Торрент-трекеры
+          rutracker.org
+          rutor.info
+          rutor.is
+
+          ###Каталоги медиаконтента для программ
+          lostfilm.tv
+          seasonvar.ru
+
+          ###Книги
+          lib.rus.ec
+          flibusta.is
+          flibs.me
+          flisland.net
+          flibusta.site
+
+          ###Телеграм
+          telegram.org
+          tdesktop.com
+          tdesktop.org
+          tdesktop.info
+          tdesktop.net
+          telesco.pe
+          telegram.dog
+          telegram.me
+          t.me
+          telegra.ph
+          web.telegram.org
+          desktop.telegram.org
+          updates.tdesktop.com
+          venus.web.telegram.org
+          flora.web.telegram.org
+          vesta.web.telegram.org
+          pluto.web.telegram.org
+          aurora.web.telegram.org
+          149.154.160.0/20
+          91.108.4.0/22
+          91.108.8.0/22
+          91.108.12.0/22
+          91.108.16.0/22
+          91.108.56.0/22
+          109.239.140.0/24
+          67.198.55.0/24
+
+          ###Разное
+          7-zip.org
+          2019.vote
+          nextcloud.com
+
+          ###Пример разблокировки по IP (убрать # в начале строки)
+          #195.82.146.214
+
+          ###Пример разблокировки по CIDR (убрать # в начале строки)
+          #103.21.244.0/22
+
+          ###Пример разблокировки по диапазону (убрать # в начале строки)
+          #100.100.100.200-100.100.100.210
+          EOF
+
+  - name: Update permissions for created files
+    raw: |
+          chmod +x \
+          {{ prefix }}/bin/rkn-update.sh \
+          {{ prefix }}/bin/rkn-update-lists.sh \
+          {{ prefix }}/bin/rkn-apply-list.sh \
+          {{ prefix }}/bin/rkn-apply-custom-list.sh \
+          {{ prefix }}/etc/ndm/fs.d/100-rkn-ipset.sh \
+          {{ prefix }}/etc/ndm/netfilter.d/100-rkn-fwmarks.sh \
+          {{ prefix }}/etc/ndm/ifstatechanged.d/100-rkn-route.sh \
+          {{ prefix }}/etc/cron.daily/100-rkn-update.sh
