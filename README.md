@@ -55,6 +55,6 @@ ansible-playbook hirkn.yml -i hosts
 ### Дополнительные правила
 Можно указать дополнительные IP и адреса, которые ВСЕГДА будут идти через VPN, вписав их в файл `/opt/etc/unblock.txt`
 
-## Протестиовано на
+## Протестировано на
 1. Keenetic Viva KN-1910
 1. Zyxel Keenetic Giga II
