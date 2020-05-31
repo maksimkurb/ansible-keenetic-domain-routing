@@ -19,20 +19,27 @@
 
           until ADDRS=\$(dig +short google.com @localhost) && [ -n "\$ADDRS" ] > /dev/null 2>&1; do sleep 5; done
 
-          IPSET="{{ ipset_name }}"
+          IPSET_VPN="{{ ipset_unblock_name }}"
+          IPSET_DIRECT="{{ ipset_direct_name }}"
           LISTS_DIR="{{ lists_dir }}"
 
           {{ prefix }}/bin/rkn-update-lists.sh
 
-          echo "|==> Unblock: Clearing ipset '\$IPSET'"
-          ipset flush \$IPSET
+          echo "|==> Unblock: Clearing ipset '\$IPSET_VPN'"
+          ipset flush \$IPSET_VPN
 
-          echo "|==> Unblock: Importing lists into ipset '\$IPSET'"
+          echo "|==> Unblock: Clearing ipset '\$IPSET_DIRECT'"
+          ipset flush \$IPSET_DIRECT
+
+          echo "|==> Unblock: Importing lists into ipset '\$IPSET_VPN'"
           {{ prefix }}/bin/rkn-apply-list.sh "\$LISTS_DIR/subnet.rkn.lst"
           {{ prefix }}/bin/rkn-apply-list.sh "\$LISTS_DIR/ipsum.rkn.lst"
 
-          echo "|==> Unblock: Importing custom lists into ipset '\$IPSET'"
-          {{ prefix }}/bin/rkn-apply-custom-list.sh
+          echo "|==> Unblock: Importing custom unblock lists into ipset '\$IPSET_VPN'"
+          {{ prefix }}/bin/rkn-apply-custom-list.sh "\$IPSET_VPN" "{{ custom_unblock_hosts }}"
+
+          echo "|==> Unblock: Importing custom direct lists into ipset '\$IPSET_DIRECT'"
+          {{ prefix }}/bin/rkn-apply-custom-list.sh "\$IPSET_DIRECT" "{{ custom_direct_hosts }}"
           EOF
 
   - name: Create /bin/rkn-update-lists.sh script
@@ -54,15 +61,21 @@
           tee {{ prefix }}/bin/rkn-apply-list.sh > /dev/null <<EOF
           #!{{ shell }}
 
-          IPSET="{{ ipset_name }}"
+          IPSET_VPN="{{ ipset_unblock_name }}"
 
-          cat "\$1" | sed "s/^/add \$IPSET /" | ipset restore -!
+          cat "\$1" | sed "s/^/add \$IPSET_VPN /" | ipset restore -!
           EOF
 
   - name: Create /bin/rkn-apply-custom-list.sh script
     raw: |
           tee {{ prefix }}/bin/rkn-apply-custom-list.sh > /dev/null <<EOF
           #!{{ shell }}
+
+          IPSET="\$1"
+          FILE="\$2"
+
+          [ -z "\$IPSET" ] && exit 1
+          [ -z "\$FILE" ] && exit 1
 
           while read line || [ -n "\$line" ]; do
 
@@ -72,27 +85,27 @@
             cidr=\$(echo \$line | grep -Eo '[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}/[0-9]{1,2}')
 
             if [ ! -z "\$cidr" ]; then
-              ipset -exist add {{ ipset_name }} \$cidr
+              ipset -exist add \$IPSET \$cidr
               continue
             fi
 
             range=\$(echo \$line | grep -Eo '[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}-[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}')
 
             if [ ! -z "\$range" ]; then
-              ipset -exist add {{ ipset_name }} \$range
+              ipset -exist add \$IPSET \$range
               continue
             fi
 
             addr=\$(echo \$line | grep -Eo '[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}')
 
             if [ ! -z "\$addr" ]; then
-              ipset -exist add {{ ipset_name }} \$addr
+              ipset -exist add \$IPSET \$addr
               continue
             fi
 
-            dig +short \$line @localhost | grep -Eo '[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' | awk '{system("ipset -exist add {{ ipset_name }} "\$1)}'
+            dig +short \$line @localhost | grep -Eo '[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}' | awk '{system("ipset -exist add '"\$IPSET"' "\$1)}'
 
-          done < "{{ custom_unblock_hosts }}"
+          done < "\$FILE"
           EOF
 
   - name: Create /etc/ndm/fs.d/100-rkn-ipset.sh
@@ -102,8 +115,11 @@
 
           [ "\$1" != "start" ] && exit 0
 
-          echo "|==> Unblock: Create ip set '{{ ipset_name }}'"
-          ipset create "{{ ipset_name }}" hash:net -exist
+          echo "|==> Unblock: Create ip set '{{ ipset_unblock_name }}' for blocked IPs"
+          ipset create "{{ ipset_unblock_name }}" hash:net -exist
+
+          echo "|==> Unblock: Create ip set '{{ ipset_direct_name }}' for always direct IPs"
+          ipset create "{{ ipset_direct_name }}" hash:net -exist
 
           # Dirty hack
           echo "|==> Unblock: Sleeping 10 secs to allow filesystem to fully mount"
@@ -123,10 +139,14 @@
           [ "\$type" == "ip6tables" ] && exit 0
           [ "\$table" != "mangle" ] && exit 0
 
-          IPSET="{{ ipset_name }}"
+          IPSET_VPN="{{ ipset_unblock_name }}"
+          IPSET_DIRECT="{{ ipset_direct_name }}"
 
-          [ -z "\$(iptables-save | grep \$IPSET)" ] && \
-          iptables -w -A PREROUTING -t mangle -m set --match-set "\$IPSET" dst,src -j MARK --set-mark 1
+          [ -z "\$(iptables-save | grep \$IPSET_VPN)" ] && \
+          iptables -w -A PREROUTING -t mangle -m set --match-set "\$IPSET_VPN" dst,src -j MARK --set-mark 1
+
+          [ -z "\$(iptables-save | grep \$IPSET_DIRECT)" ] && \
+          iptables -w -A PREROUTING -t mangle -m set --match-set "\$IPSET_DIRECT" dst,src -j MARK --set-mark 2
 
           exit 0
           EOF
@@ -156,6 +176,11 @@
                       ip route add default dev \$VPN_INTERFACE table 1
                   fi
 
+                  if [ -z "\$(ip rule show | grep 993:)" ]; then
+                      echo "|==> Unblock: add rule for direct access"
+                      ip rule add fwmark 2 table main priority 993
+                  fi
+
                   ### Disable HW NAT
                   sysctl -w net.ipv4.netfilter.ip_conntrack_fastnat=0 || true # NDMS2
                   sysctl -w net.netfilter.nf_conntrack_fastnat=0 || true # NDMS3
@@ -170,6 +195,11 @@
                   if [ -n "\$(ip route list table 1)" ]; then
                       echo "|==> Unblock: del route to \$VPN_INTERFACE"
                       ip route flush table 1
+                  fi
+
+                  if [ -z "\$(ip rule show | grep 993:)" ]; then
+                      echo "|==> Unblock: del rule for direct access"
+                      ip rule del fwmark 2 table main priority 993
                   fi
 
                   ### Enable HW NAT
@@ -189,17 +219,27 @@
           exit 0
           EOF
 
-  - name: Create /etc/unblock.txt
+  - name: Create /opt/etc/unblock.txt
     raw: |
-          tee {{ prefix }}/etc/unblock.txt > /dev/null <<EOF
+          if [ ! -f {{ custom_unblock_hosts }} ]; then tee {{ custom_unblock_hosts }} > /dev/null <<EOF
           ###Торрент-трекеры
           rutracker.org
           rutor.info
           rutor.is
+          new-rutor.org
+          nnm-club.me
+          tapochek.net
+          thepiratebay.org
+          bt1.t-ru.org
+          bt2.t-ru.org
+          bt3.t-ru.org
+          bt4.t-ru.org
 
           ###Каталоги медиаконтента для программ
           lostfilm.tv
           seasonvar.ru
+          kinozal.tv
+          uniongang.tv
 
           ###Книги
           lib.rus.ec
@@ -236,10 +276,15 @@
           109.239.140.0/24
           67.198.55.0/24
 
+          ###LinkedIn
+          linkedin.com
+          www.linkedin.com
+
           ###Разное
           7-zip.org
           2019.vote
           nextcloud.com
+          nextcloud.org
 
           ###Пример разблокировки по IP (убрать # в начале строки)
           #195.82.146.214
@@ -250,6 +295,24 @@
           ###Пример разблокировки по диапазону (убрать # в начале строки)
           #100.100.100.200-100.100.100.210
           EOF
+          fi
+
+  - name: Create /opt/etc/direct.txt
+    raw: |
+          if [ ! -f {{ custom_direct_hosts }} ]; then tee {{ custom_direct_hosts }} > /dev/null <<EOF
+          # Pikabu (не работает под некоторыми VPN)
+          pikabu.ru
+
+          ###Пример разблокировки по IP (убрать # в начале строки)
+          #195.82.146.214
+
+          ###Пример разблокировки по CIDR (убрать # в начале строки)
+          #103.21.244.0/22
+
+          ###Пример разблокировки по диапазону (убрать # в начале строки)
+          #100.100.100.200-100.100.100.210
+          EOF
+          fi
 
   - name: Update permissions for created files
     raw: |
