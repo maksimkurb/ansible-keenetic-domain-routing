@@ -24,7 +24,7 @@ cd ansible-keenetic-domain-routing/
 Добавить роутер в файл hosts в группу keenetic
 ```
 [keenetic]
-192.168.1.1 ansible_user=root ansible_password=keenetic
+192.168.1.1 ansible_port=2222 ansible_user=root ansible_password=keenetic
 ```
 
 Подставить переменные в **group_vars/keenetic.yml**
