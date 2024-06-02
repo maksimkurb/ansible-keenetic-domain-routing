@@ -5,24 +5,24 @@
 # имя интерфейса VPN (можно посмотреть с помощью ifconfig)
 vpn_interface_name: ppp2
 
-# Папка, в которую будут сохраняться списки заблокированных маршрутов
+# Папка, в которую будут сохраняться скачанные списки маршрутов
 lists_dir: "{{ prefix }}/tmp/lst"
 
 # Файл с собственными адресами, которые будут идти через VPN
-custom_unblock_hosts: "{{ prefix }}/etc/unblock.txt"
+custom_vpn_hosts: "{{ prefix }}/etc/routing-vpn.txt"
 
 # [NEW!] Файл с собственными адресами, которые всегда будут идти напрямую
-custom_direct_hosts: "{{ prefix }}/etc/direct.txt"
+custom_direct_hosts: "{{ prefix }}/etc/routing-direct.txt"
 
 #########################################
 ## Настройки для опытных пользователей ##
 #########################################
 
 # Название списка ip сетей в netfilter, которые будут идти через VPN (для опытных пользователей)
-ipset_unblock_name: rublock
+ipset_vpn_name: routing_vpn
 
 # Название списка ip сетей в netfilter, которые будут идти всегда напрямую (для опытных пользователей)
-ipset_direct_name: rublock_ignore
+ipset_direct_name: routing_direct
 
 # Префикс корневой системы OPKG (для опытных пользователей)
 prefix: /opt

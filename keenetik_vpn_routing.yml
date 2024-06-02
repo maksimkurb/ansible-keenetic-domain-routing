@@ -11,64 +11,64 @@
   - name: Install required software
     raw: opkg install ipset curl iptables cron bind-dig
 
-  - name: Create /bin/rkn-update.sh script
+  - name: Create /bin/routing-update.sh script
     raw: |
-          tee {{ prefix }}/bin/rkn-update.sh > /dev/null <<EOF
+          tee {{ prefix }}/bin/routing-update.sh > /dev/null <<EOF
           #!{{ shell }}
-          echo "|==> Unblock: Checking for network availability before updating IP sets"
+          echo "|==> Domain routing: Checking for network availability before updating IP sets"
 
           until ADDRS=\$(dig +short google.com @localhost) && [ -n "\$ADDRS" ] > /dev/null 2>&1; do sleep 5; done
 
-          IPSET_VPN="{{ ipset_unblock_name }}"
+          IPSET_VPN="{{ ipset_vpn_name }}"
           IPSET_DIRECT="{{ ipset_direct_name }}"
           LISTS_DIR="{{ lists_dir }}"
 
-          {{ prefix }}/bin/rkn-update-lists.sh
+          {{ prefix }}/bin/routing-update-lists.sh
 
-          echo "|==> Unblock: Clearing ipset '\$IPSET_VPN'"
+          echo "|==> Domain routing: Clearing ipset '\$IPSET_VPN'"
           ipset flush \$IPSET_VPN
 
-          echo "|==> Unblock: Clearing ipset '\$IPSET_DIRECT'"
+          echo "|==> Domain routing: Clearing ipset '\$IPSET_DIRECT'"
           ipset flush \$IPSET_DIRECT
 
-          echo "|==> Unblock: Importing lists into ipset '\$IPSET_VPN'"
-          {{ prefix }}/bin/rkn-apply-list.sh "\$LISTS_DIR/subnet.rkn.lst"
-          {{ prefix }}/bin/rkn-apply-list.sh "\$LISTS_DIR/ipsum.rkn.lst"
+          echo "|==> Domain routing: Importing lists into ipset '\$IPSET_VPN'"
+          {{ prefix }}/bin/routing-apply-list.sh "\$LISTS_DIR/subnet.routing.lst"
+          {{ prefix }}/bin/routing-apply-list.sh "\$LISTS_DIR/ipsum.routing.lst"
 
-          echo "|==> Unblock: Importing custom unblock lists into ipset '\$IPSET_VPN'"
-          {{ prefix }}/bin/rkn-apply-custom-list.sh "\$IPSET_VPN" "{{ custom_unblock_hosts }}"
+          echo "|==> Domain routing: Importing custom unblock lists into ipset '\$IPSET_VPN'"
+          {{ prefix }}/bin/routing-apply-custom-list.sh "\$IPSET_VPN" "{{ custom_vpn_hosts }}"
 
-          echo "|==> Unblock: Importing custom direct lists into ipset '\$IPSET_DIRECT'"
-          {{ prefix }}/bin/rkn-apply-custom-list.sh "\$IPSET_DIRECT" "{{ custom_direct_hosts }}"
+          echo "|==> Domain routing: Importing custom direct lists into ipset '\$IPSET_DIRECT'"
+          {{ prefix }}/bin/routing-apply-custom-list.sh "\$IPSET_DIRECT" "{{ custom_direct_hosts }}"
           EOF
 
-  - name: Create /bin/rkn-update-lists.sh script
+  - name: Create /bin/routing-update-lists.sh script
     raw: |
-          tee {{ prefix }}/bin/rkn-update-lists.sh > /dev/null <<EOF
+          tee {{ prefix }}/bin/routing-update-lists.sh > /dev/null <<EOF
           #!{{ shell }}
 
           LISTS_DIR="{{ lists_dir }}"
 
           mkdir -p \$LISTS_DIR
 
-          echo "|==> Unblock: Downloading block lists"
-          curl -z \$LISTS_DIR/subnet.rkn.lst https://antifilter.download/list/subnet.lst --output \$LISTS_DIR/subnet.rkn.lst
-          curl -z \$LISTS_DIR/ipsum.rkn.lst https://antifilter.download/list/ipsum.lst --output \$LISTS_DIR/ipsum.rkn.lst
+          echo "|==> Domain routing: Downloading block lists"
+          curl -z \$LISTS_DIR/subnet.routing.lst https://antifilter.download/list/subnet.lst --output \$LISTS_DIR/subnet.routing.lst
+          curl -z \$LISTS_DIR/ipsum.routing.lst https://antifilter.download/list/ipsum.lst --output \$LISTS_DIR/ipsum.routing.lst
           EOF
 
-  - name: Create /bin/rkn-apply-list.sh script
+  - name: Create /bin/routing-apply-list.sh script
     raw: |
-          tee {{ prefix }}/bin/rkn-apply-list.sh > /dev/null <<EOF
+          tee {{ prefix }}/bin/routing-apply-list.sh > /dev/null <<EOF
           #!{{ shell }}
 
-          IPSET_VPN="{{ ipset_unblock_name }}"
+          IPSET_VPN="{{ ipset_vpn_name }}"
 
           cat "\$1" | sed "s/^/add \$IPSET_VPN /" | ipset restore -!
           EOF
 
-  - name: Create /bin/rkn-apply-custom-list.sh script
+  - name: Create /bin/routing-apply-custom-list.sh script
     raw: |
-          tee {{ prefix }}/bin/rkn-apply-custom-list.sh > /dev/null <<EOF
+          tee {{ prefix }}/bin/routing-apply-custom-list.sh > /dev/null <<EOF
           #!{{ shell }}
 
           IPSET="\$1"
@@ -108,38 +108,38 @@
           done < "\$FILE"
           EOF
 
-  - name: Create /etc/ndm/fs.d/100-rkn-ipset.sh
+  - name: Create /etc/ndm/fs.d/100-routing-ipset.sh
     raw: |
-          tee {{ prefix }}/etc/ndm/fs.d/100-rkn-ipset.sh > /dev/null <<EOF
+          tee {{ prefix }}/etc/ndm/fs.d/100-routing-ipset.sh > /dev/null <<EOF
           #!{{ shell }}
 
           [ "\$1" != "start" ] && exit 0
 
-          echo "|==> Unblock: Create ip set '{{ ipset_unblock_name }}' for blocked IPs"
-          ipset create "{{ ipset_unblock_name }}" hash:net -exist
+          echo "|==> Domain routing: Create ip set '{{ ipset_vpn_name }}' for blocked IPs"
+          ipset create "{{ ipset_vpn_name }}" hash:net -exist
 
-          echo "|==> Unblock: Create ip set '{{ ipset_direct_name }}' for always direct IPs"
+          echo "|==> Domain routing: Create ip set '{{ ipset_direct_name }}' for always direct IPs"
           ipset create "{{ ipset_direct_name }}" hash:net -exist
 
           # Dirty hack
-          echo "|==> Unblock: Sleeping 10 secs to allow filesystem to fully mount"
+          echo "|==> Domain routing: Sleeping 10 secs to allow filesystem to fully mount"
           sleep 10
 
           # update list
-          {{ prefix }}/bin/rkn-update.sh &
+          {{ prefix }}/bin/routing-update.sh &
 
           exit 0
           EOF
 
-  - name: Create /etc/ndm/netfilter.d/100-rkn-fwmarks.sh
+  - name: Create /etc/ndm/netfilter.d/100-routing-fwmarks.sh
     raw: |
-          tee {{ prefix }}/etc/ndm/netfilter.d/100-rkn-fwmarks.sh > /dev/null <<EOF
+          tee {{ prefix }}/etc/ndm/netfilter.d/100-routing-fwmarks.sh > /dev/null <<EOF
           #!{{ shell }}
 
           [ "\$type" == "ip6tables" ] && exit 0
           [ "\$table" != "mangle" ] && exit 0
 
-          IPSET_VPN="{{ ipset_unblock_name }}"
+          IPSET_VPN="{{ ipset_vpn_name }}"
           IPSET_DIRECT="{{ ipset_direct_name }}"
 
           [ -z "\$(iptables-save | grep \$IPSET_VPN)" ] && \
@@ -151,9 +151,9 @@
           exit 0
           EOF
 
-  - name: Create /etc/ndm/ifstatechanged.d/100-rkn-route.sh script
+  - name: Create /etc/ndm/ifstatechanged.d/100-routing-route.sh script
     raw: |
-          tee {{ prefix }}/etc/ndm/ifstatechanged.d/100-rkn-route.sh > /dev/null <<EOF
+          tee {{ prefix }}/etc/ndm/ifstatechanged.d/100-routing-route.sh > /dev/null <<EOF
           #!{{ shell }}
 
           VPN_INTERFACE="{{ vpn_interface_name }}"
@@ -161,23 +161,23 @@
           [ "\$1" == "hook" ] || exit 0
           [ "\$system_name" == "\$VPN_INTERFACE" ] || exit 0
 
-          echo "|==> Unblock: \$id change: \$change  to - up:\$up link:\$link connected:\$connected"
+          echo "|==> Domain routing: \$id change: \$change  to - up:\$up link:\$link connected:\$connected"
 
           case \${change}-\${connected}-\${link}-\${up} in
               link-yes-up-up)
                   ### Create routing tables for marked packets
                   if [ -z "\$(ip rule show | grep 1000:)" ]; then
-                      echo "|==> Unblock: add rule to \$VPN_INTERFACE"
+                      echo "|==> Domain routing: add rule to \$VPN_INTERFACE"
                       ip rule add fwmark 1 table 1 priority 1000
                   fi
 
                   if [ -z "\$(ip route list table 1)" ]; then
-                      echo "|==> Unblock: add route to \$VPN_INTERFACE"
+                      echo "|==> Domain routing: add route to \$VPN_INTERFACE"
                       ip route add default dev \$VPN_INTERFACE table 1
                   fi
 
                   if [ -z "\$(ip rule show | grep 993:)" ]; then
-                      echo "|==> Unblock: add rule for direct access"
+                      echo "|==> Domain routing: add rule for direct access"
                       ip rule add fwmark 2 table main priority 993
                   fi
 
@@ -188,17 +188,17 @@
               link-no-down-down)
                   ### Delete routing tables for marked packets
                   if [ -n "\$(ip rule show | grep 1000:)" ]; then
-                      echo "|==> Unblock: del rule to \$VPN_INTERFACE"
+                      echo "|==> Domain routing: del rule to \$VPN_INTERFACE"
                       ip rule del table 1
                   fi
 
                   if [ -n "\$(ip route list table 1)" ]; then
-                      echo "|==> Unblock: del route to \$VPN_INTERFACE"
+                      echo "|==> Domain routing: del route to \$VPN_INTERFACE"
                       ip route flush table 1
                   fi
 
                   if [ -z "\$(ip rule show | grep 993:)" ]; then
-                      echo "|==> Unblock: del rule for direct access"
+                      echo "|==> Domain routing: del rule for direct access"
                       ip rule del fwmark 2 table main priority 993
                   fi
 
@@ -209,20 +209,19 @@
           esac
           EOF
 
-  - name: Create /etc/cron.daily/100-rkn-update.sh
+  - name: Create /etc/cron.daily/100-routing-update.sh
     raw: |
-          tee {{ prefix }}/etc/cron.daily/100-rkn-update.sh > /dev/null <<EOF
+          tee {{ prefix }}/etc/cron.daily/100-routing-update.sh > /dev/null <<EOF
           #!{{ shell }}
 
-          {{ prefix }}/bin/rkn-update.sh
+          {{ prefix }}/bin/routing-update.sh
 
           exit 0
           EOF
 
-  - name: Create /opt/etc/unblock.txt
+  - name: "Create vpn list: {{ custom_vpn_hosts }}"
     raw: |
-          if [ ! -f {{ custom_unblock_hosts }} ]; then tee {{ custom_unblock_hosts }} > /dev/null <<EOF
-          ###Торрент-трекеры
+          if [ ! -f {{ custom_vpn_hosts }} ]; then tee {{ custom_vpn_hosts }} > /dev/null <<EOF
           rutracker.org
           rutor.info
           rutor.is
@@ -235,64 +234,33 @@
           bt3.t-ru.org
           bt4.t-ru.org
 
-          ###Каталоги медиаконтента для программ
           lostfilm.tv
           seasonvar.ru
           kinozal.tv
           uniongang.tv
 
-          ###Книги
           lib.rus.ec
           flibusta.is
           flibs.me
           flisland.net
           flibusta.site
 
-          ###Телеграм
-          telegram.org
-          tdesktop.com
-          tdesktop.org
-          tdesktop.info
-          tdesktop.net
-          telesco.pe
-          telegram.dog
-          telegram.me
-          t.me
-          telegra.ph
-          web.telegram.org
-          desktop.telegram.org
-          updates.tdesktop.com
-          venus.web.telegram.org
-          flora.web.telegram.org
-          vesta.web.telegram.org
-          pluto.web.telegram.org
-          aurora.web.telegram.org
-          149.154.160.0/20
-          91.108.4.0/22
-          91.108.8.0/22
-          91.108.12.0/22
-          91.108.16.0/22
-          91.108.56.0/22
-          109.239.140.0/24
-          67.198.55.0/24
-
           ###LinkedIn
           linkedin.com
           www.linkedin.com
 
-          ###Разное
+          ### Разное
           7-zip.org
-          2019.vote
           nextcloud.com
           nextcloud.org
 
-          ###Пример разблокировки по IP (убрать # в начале строки)
+          ###Пример маршрута по IP (убрать # в начале строки)
           #195.82.146.214
 
-          ###Пример разблокировки по CIDR (убрать # в начале строки)
+          ###Пример маршрута по CIDR (убрать # в начале строки)
           #103.21.244.0/22
 
-          ###Пример разблокировки по диапазону (убрать # в начале строки)
+          ###Пример маршрута по диапазону (убрать # в начале строки)
           #100.100.100.200-100.100.100.210
           EOF
           fi
@@ -303,13 +271,13 @@
           # Pikabu (не работает под некоторыми VPN)
           pikabu.ru
 
-          ###Пример разблокировки по IP (убрать # в начале строки)
+          ###Пример маршрута по IP (убрать # в начале строки)
           #195.82.146.214
 
-          ###Пример разблокировки по CIDR (убрать # в начале строки)
+          ###Пример маршрута по CIDR (убрать # в начале строки)
           #103.21.244.0/22
 
-          ###Пример разблокировки по диапазону (убрать # в начале строки)
+          ###Пример маршрута по диапазону (убрать # в начале строки)
           #100.100.100.200-100.100.100.210
           EOF
           fi
@@ -317,11 +285,11 @@
   - name: Update permissions for created files
     raw: |
           chmod +x \
-          {{ prefix }}/bin/rkn-update.sh \
-          {{ prefix }}/bin/rkn-update-lists.sh \
-          {{ prefix }}/bin/rkn-apply-list.sh \
-          {{ prefix }}/bin/rkn-apply-custom-list.sh \
-          {{ prefix }}/etc/ndm/fs.d/100-rkn-ipset.sh \
-          {{ prefix }}/etc/ndm/netfilter.d/100-rkn-fwmarks.sh \
-          {{ prefix }}/etc/ndm/ifstatechanged.d/100-rkn-route.sh \
-          {{ prefix }}/etc/cron.daily/100-rkn-update.sh
+          {{ prefix }}/bin/routing-update.sh \
+          {{ prefix }}/bin/routing-update-lists.sh \
+          {{ prefix }}/bin/routing-apply-list.sh \
+          {{ prefix }}/bin/routing-apply-custom-list.sh \
+          {{ prefix }}/etc/ndm/fs.d/100-routing-ipset.sh \
+          {{ prefix }}/etc/ndm/netfilter.d/100-routing-fwmarks.sh \
+          {{ prefix }}/etc/ndm/ifstatechanged.d/100-routing-route.sh \
+          {{ prefix }}/etc/cron.daily/100-routing-update.sh
